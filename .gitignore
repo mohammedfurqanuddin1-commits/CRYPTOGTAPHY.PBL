@@ -1,24 +1,164 @@
-# Compiled class file
-*.class
 
-# Log file
-*.log
+import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.PrivateKey;
+import java.security.PublicKey;
+import java.security.SecureRandom;
+import java.util.*;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
-# BlueJ files
-*.ctxt
+public class EmailSecuritySystem {
 
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
+    // --- 1. Naive Bayes Spam Classifier Implementation ---
+    static class NaiveBayesSpamFilter {
+        private final Map<String, Integer> spamWordCounts = new HashMap<>();
+        private final Map<String, Integer> hamWordCounts = new HashMap<>();
+        private final Set<String> vocabulary = new HashSet<>();
+        private int totalSpamDocs = 0;
+        private int totalHamDocs = 0;
+        private int totalSpamWords = 0;
+        private int totalHamWords = 0;
 
-# Package Files #
-*.jar
-*.war
-*.nar
-*.ear
-*.zip
-*.tar.gz
-*.rar
+        public void train(String[] messages, String[] labels) {
+            for (int i = 0; i < messages.length; i++) {
+                String[] words = tokenize(messages[i]);
+                boolean isSpam = labels[i].equalsIgnoreCase("spam");
 
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
-hs_err_pid*
-replay_pid*
+                if (isSpam) {
+                    totalSpamDocs++;
+                } else {
+                    totalHamDocs++;
+                }
+
+                for (String word : words) {
+                    vocabulary.add(word);
+                    if (isSpam) {
+                        spamWordCounts.put(word, spamWordCounts.getOrDefault(word, 0) + 1);
+                        totalSpamWords++;
+                    } else {
+                        hamWordCounts.put(word, hamWordCounts.getOrDefault(word, 0) + 1);
+                        totalHamWords++;
+                    }
+                }
+            }
+        }
+
+        public String predict(String text) {
+            String[] words = tokenize(text);
+            int totalDocs = totalSpamDocs + totalHamDocs;
+
+            // Prior probabilities P(Spam) and P(Ham)
+            double logProbSpam = Math.log((double) totalSpamDocs / totalDocs);
+            double logProbHam = Math.log((double) totalHamDocs / totalDocs);
+
+            int vocabSize = vocabulary.size();
+
+            // Multinomial Naive Bayes calculation with Laplace smoothing (+1)
+            for (String word : words) {
+                int countSpam = spamWordCounts.getOrDefault(word, 0);
+                double pWordGivenSpam = (double) (countSpam + 1) / (totalSpamWords + vocabSize);
+                logProbSpam += Math.log(pWordGivenSpam);
+
+                int countHam = hamWordCounts.getOrDefault(word, 0);
+                double pWordGivenHam = (double) (countHam + 1) / (totalHamWords + vocabSize);
+                logProbHam += Math.log(pWordGivenHam);
+            }
+
+            return logProbSpam > logProbHam ? "spam" : "ham";
+        }
+
+        private String[] tokenize(String text) {
+            return text.toLowerCase().replaceAll("[^a-zA-Z0-9\\s]", "").split("\\s+");
+        }
+    }
+
+    public static void main(String[] args) throws Exception {
+        Scanner scanner = new Scanner(System.in);
+
+        // 1. Sample training data for the spam filter
+        String[] xTrain = {
+            "Win a free lottery ticket now",
+            "Hey, are we still meeting for lunch?",
+            "Claim your free prize today!",
+            "Can you review the project report?",
+            "URGENT: Your account has been suspended",
+            "Meeting rescheduled to 5 PM"
+        };
+        String[] yTrain = {"spam", "ham", "spam", "ham", "spam", "ham"};
+
+        // 2. Train the spam classifier
+        NaiveBayesSpamFilter classifier = new NaiveBayesSpamFilter();
+        classifier.train(xTrain, yTrain);
+
+        // 3. RSA Key Generation (2048-bit)
+        KeyPairGenerator keyPairGen = KeyPairGenerator.getInstance("RSA");
+        keyPairGen.initialize(2048);
+        KeyPair keyPair = keyPairGen.generateKeyPair();
+        PublicKey publicKey = keyPair.getPublic();
+        PrivateKey privateKey = keyPair.getPrivate();
+        System.out.println("Generated Recipient RSA Key Pair.");
+
+        // 4. User Input & Symmetric (AES) + Asymmetric (RSA) Encryption
+        System.out.print("\nEnter your email message to encrypt: ");
+        String message = scanner.nextLine();
+        byte[] messageBytes = message.getBytes(StandardCharsets.UTF_8);
+
+        // Generate random AES-256 key & 16-byte IV
+        KeyGenerator keyGen = KeyGenerator.getInstance("AES");
+        keyGen.init(256);
+        SecretKey aesKey = keyGen.generateKey();
+
+        byte[] iv = new byte[16];
+        SecureRandom secureRandom = new SecureRandom();
+        secureRandom.nextBytes(iv);
+        IvParameterSpec ivSpec = new IvParameterSpec(iv);
+
+        // AES Payload Encryption (AES/CBC/PKCS5Padding)
+        Cipher aesCipher = Cipher.getInstance("AES/CBC/PKCS5Padding");
+        aesCipher.init(Cipher.ENCRYPT_MODE, aesKey, ivSpec);
+        byte[] encryptedMessage = aesCipher.doFinal(messageBytes);
+
+        // RSA AES Key Encryption (RSA/ECB/OAEPWithSHA-256AndMGF1Padding)
+        Cipher rsaCipher = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
+        rsaCipher.init(Cipher.ENCRYPT_MODE, publicKey);
+        byte[] encryptedAesKey = rsaCipher.doFinal(aesKey.getEncoded());
+
+        System.out.println("\n--- HYBRID ENCRYPTION COMPLETE ---");
+        System.out.println("Encrypted AES Key: " + bytesToHex(encryptedAesKey).substring(0, 60) + "...");
+        System.out.println("Encrypted Message Content: " + bytesToHex(encryptedMessage).substring(0, 60) + "...");
+
+        // 5. Decryption Process
+        // Decrypt AES key with RSA Private Key
+        rsaCipher.init(Cipher.DECRYPT_MODE, privateKey);
+        byte[] decryptedAesKeyBytes = rsaCipher.doFinal(encryptedAesKey);
+        SecretKey decryptedAesKey = new SecretKeySpec(decryptedAesKeyBytes, "AES");
+
+        // Decrypt Message with AES Key and IV
+        aesCipher.init(Cipher.DECRYPT_MODE, decryptedAesKey, ivSpec);
+        byte[] decryptedBytes = aesCipher.doFinal(encryptedMessage);
+        String originalText = new String(decryptedBytes, StandardCharsets.UTF_8);
+
+        System.out.println("\n--- DECRYPTED MESSAGE ---");
+        System.out.println("Result: " + originalText);
+
+        // 6. Check if the decrypted message is spam
+        String spamStatus = classifier.predict(originalText);
+        System.out.println("Spam Filter Classification: " + spamStatus);
+
+        scanner.close();
+    }
+
+    // Helper method to convert byte arrays to hex strings
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
+    }
+}
